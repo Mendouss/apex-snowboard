@@ -35,9 +35,66 @@ workflows:
           keychain initialize
           if [ -z "$CERTIFICATE_PRIVATE_KEY" ]; then
             /usr/bin/openssl genrsa -out /tmp/cert_key.pem 2048
-            export CERTIFICATE_PRIVATE_KEY="$(/bin/cat /tmp/cert_key.pem)"
+          else
+            printf "%s\n" "$CERTIFICATE_PRIVATE_KEY" > /tmp/cert_key.pem
           fi
+          /usr/bin/python3 - << 'PYEOF'
+          import os, re, sys
+
+          uuid_re = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+          keyid_re = re.compile(r'(?:AuthKey_)?([A-Z0-9]{10})(?:\.p8)?')
+
+          issuer = os.environ.get('APP_STORE_CONNECT_ISSUER_ID', '').strip()
+          key_id = os.environ.get('APP_STORE_CONNECT_KEY_IDENTIFIER', '').strip()
+          raw_pk = os.environ.get('APP_STORE_CONNECT_PRIVATE_KEY', '').strip()
+
+          for k, v in os.environ.items():
+              val = v.strip()
+              if not issuer and uuid_re.search(val) and 'KEY' not in val:
+                  issuer = uuid_re.search(val).group(0)
+              if not raw_pk and ('BEGIN PRIVATE KEY' in val or val.startswith('MIG')):
+                  raw_pk = val
+          if uuid_re.search(key_id) and not uuid_re.search(issuer):
+              issuer, key_id = key_id, issuer
+          if uuid_re.search(issuer):
+              issuer = uuid_re.search(issuer).group(0)
+          m_kid = keyid_re.search(key_id)
+          if m_kid:
+              key_id = m_kid.group(1)
+          else:
+              for k, v in os.environ.items():
+                  if any(w in k.upper() for w in ['KEY', 'ASC', 'APP_STORE']):
+                      m2 = keyid_re.search(v.strip())
+                      if m2 and 'BEGIN' not in v:
+                          key_id = m2.group(1)
+                          break
+
+          body = re.sub(r'-----BEGIN [A-Z ]+-----', '', raw_pk)
+          body = re.sub(r'-----END [A-Z ]+-----', '', body)
+          body = re.sub(r'\s+', '', body)
+          lines = [body[i:i+64] for i in range(0, len(body), 64)]
+          pem = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
+
+          print(f"Diagnostic Apple API -> ISSUER_ID: {'OK ('+issuer[:8]+'...)' if issuer else 'MANQUANT'}")
+          print(f"Diagnostic Apple API -> KEY_ID: {'OK ('+key_id+')' if key_id else 'MANQUANT'}")
+          print(f"Diagnostic Apple API -> PRIVATE_KEY (.p8): {'OK ('+str(len(body))+' chars base64)' if len(body) > 60 else 'MANQUANT OU INVALIDE ('+str(len(body))+' chars)'}")
+
+          if not issuer or not key_id or len(body) < 60:
+              print("ERREUR: Verifiez vos 3 variables dans l'onglet Environment variables (groupe app_store) de Codemagic.")
+              sys.exit(1)
+
+          with open('/tmp/AuthKey.p8', 'w') as f:
+              f.write(pem)
+          with open('/tmp/asc_env.sh', 'w') as f:
+              f.write(f'export CLEAN_ISSUER_ID="{issuer}"\n')
+              f.write(f'export CLEAN_KEY_ID="{key_id}"\n')
+          PYEOF
+          source /tmp/asc_env.sh
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --issuer-id "$CLEAN_ISSUER_ID" \
+            --key-id "$CLEAN_KEY_ID" \
+            --private-key "@file:/tmp/AuthKey.p8" \
+            --certificate-key "@file:/tmp/cert_key.pem" \
             --type IOS_APP_STORE \
             --create
           keychain add-certificates
@@ -46,16 +103,9 @@ workflows:
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME"
           /bin/ls -lh build/ios/ipa/*.ipa
-    publishing:
-      app_store_connect:
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        submit_to_testflight: false
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-
 # ============================================================================
 # BUNDLE XCODE PRE-COMPILE APEX SNOWBOARD 3D (NE PAS MODIFIER CI-DESSOUS)
 # ============================================================================
