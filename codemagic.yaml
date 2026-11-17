@@ -14,7 +14,8 @@ workflows:
     scripts:
       - name: 1. Extraction du projet Xcode pre-compile (Zero dependance npm)
         script: |
-          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ruby -e "require 'xcodeproj'" 2>/dev/null || gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
           if [ ! -d "ios/App/App.xcodeproj" ]; then
             /usr/bin/sed -n "s/^[[:space:]]*#APEX_B64://p" codemagic.yaml | /usr/bin/tr -d " \t\r" | /usr/bin/base64 --decode > /tmp/apex_ios.tar.gz
             /usr/bin/tar -xzf /tmp/apex_ios.tar.gz
@@ -30,7 +31,8 @@ workflows:
           /bin/ls -la ios/App/App.xcodeproj ios/App/App/public
       - name: 2. Creation du profil Apple (embedded.mobileprovision) et signature de ApexSnowboard3D.ipa
         script: |
-          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ruby -e "require 'xcodeproj'" 2>/dev/null || gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
           /bin/mkdir -p build/ios/ipa
           keychain initialize
           if [ -z "$CERTIFICATE_PRIVATE_KEY" ]; then
@@ -90,6 +92,7 @@ workflows:
               f.write(f'export CLEAN_KEY_ID="{key_id}"\n')
           PYEOF
           source /tmp/asc_env.sh
+          for CID in $(app-store-connect list-certificates --issuer-id "$CLEAN_ISSUER_ID" --key-id "$CLEAN_KEY_ID" --private-key "@file:/tmp/AuthKey.p8" --json 2>/dev/null | /usr/bin/python3 -c "import sys,json,re; m=re.search(r'\\[.*\\]',sys.stdin.read(),re.S); print(' '.join(c['id'] for c in (json.loads(m.group(0)) if m else []) if 'DISTRIBUTION' in c.get('attributes',{}).get('certificateType','')))"); do app-store-connect delete-certificate "$CID" --issuer-id "$CLEAN_ISSUER_ID" --key-id "$CLEAN_KEY_ID" --private-key "@file:/tmp/AuthKey.p8" || true; done
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --issuer-id "$CLEAN_ISSUER_ID" \
             --key-id "$CLEAN_KEY_ID" \
